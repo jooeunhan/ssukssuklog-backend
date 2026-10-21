@@ -23,11 +23,23 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(lifespan=lifespan)
+
+app = FastAPI(
+    title="쑥쑥로그 API",
+    description="어린이집 교사를 위한 아동 건강 기록 관리 시스템",
+    version="0.1.1",
+    lifespan=lifespan
+)
+
 
 
 # 서버 실행 확인
-@app.get("/")
+@app.get(
+    "/",
+    tags=["Server"],
+    summary="서버 실행 확인",
+    description="서버가 실행됐는지 확인합니다."
+)
 def home():
     return {
         "message": "SsukSsukLog Backend Running!"
@@ -35,7 +47,12 @@ def home():
 
 
 # 데이터베이스 연결 확인
-@app.get("/db-test")
+@app.get(
+    "/db-test",
+    tags=["Database"],
+    summary="데이터베이스 연결 확인",
+    description="데이터베이스가 연결됐는지 확인합니다."
+)
 def db_test():
     with engine.connect() as connection:
         result = connection.execute(
@@ -52,7 +69,12 @@ def db_test():
 
 
 # children 테이블 생성 확인
-@app.get("/table-test")
+@app.get(
+    "/table-test",
+    tags=["Children"],
+    summary="테이블 생성 확인",
+    description="아동 테이블이 생성됐는지 확인합니다."
+)
 def table_test():
     with engine.connect() as connection:
         result = connection.execute(
@@ -73,6 +95,9 @@ def table_test():
 # 아동 등록 API
 @app.post(
     "/children",
+    tags=["Children"],
+    summary="아동 등록",
+    description="아동의 정보를 등록합니다.",
     response_model=ChildResponse,
     status_code=201
 )
@@ -101,6 +126,9 @@ def create_child(
 # 아동 전체 목록 조회 API
 @app.get(
     "/children",
+    tags=["Children"],
+    summary="전체 아동 목록 조회",
+    description="등록된 모든 아동의 정보를 조회합니다.",
     response_model=list[ChildResponse]
 )
 def get_children(db: Session = Depends(get_db)):
@@ -115,6 +143,9 @@ def get_children(db: Session = Depends(get_db)):
 # 특정 아동 상세 조회 API
 @app.get(
     "/children/{child_id}",
+    tags=["Children"],
+    summary="특정 아동 상세 조회",
+    description="특정 아동의 정보를 조회합니다.",
     response_model=ChildResponse
 )
 def get_child(
@@ -139,6 +170,9 @@ def get_child(
 
 @app.patch (
     "/children/{child_id}",
+    tags=["Children"],
+    summary="아동 정보 수정",
+    description="특정 아동의 정보를 수정합니다.",
     response_model=ChildResponse
 )
 def update_child(
@@ -172,7 +206,12 @@ def update_child(
 
 
 # 특정 아동 정보 삭제 API
-@app.delete("/children/{child_id}")
+@app.delete(
+    "/children/{child_id}",
+    tags=["Children"],
+    summary="특정 아동 정보 삭제",
+    description="특정 아동의 정보를 삭제합니다."
+)
 def delete_child(
     child_id: int,
     db: Session = Depends(get_db)
@@ -201,7 +240,12 @@ def delete_child(
         "deleted_child_id": child_id
     }
 
-@app.get("/health-table-test")
+@app.get(
+    "/health-table-test",
+    tags=["Health"],
+    summary="테이블 생성 확인",
+    description="건강 정보 테이블이 생성되었는지 확인합니다."
+)
 def health_table_test():
     with engine.connect() as connection:
         result = connection.execute(
@@ -221,6 +265,9 @@ def health_table_test():
 # 건강 기록 등록 API
 @app.post(
     "/records",
+    tags=["Health"],
+    summary="건강 기록 등록",
+    description="그날의 건강 기록을 등록합니다.",
     response_model=HealthRecordResponse,
     status_code=201
 )
@@ -257,6 +304,9 @@ def create_health_record(
 # 전체 건강 기록 조회 API
 @app.get(
     "/records",
+    tags=["Health"],
+    summary="전체 건강 기록 조회",
+    description="전체 아동의 기록된 전체 건강 기록을 조회합니다.",
     response_model=list[HealthRecordResponse]
 )
 def get_health_records(
@@ -270,6 +320,9 @@ def get_health_records(
 # 특정 아동의 건강 기록 조회 API
 @app.get(
     "/children/{child_id}/records",
+    tags=["Health"],
+    summary="특정 아동 건강 기록 조회",
+    description="특정 아동의 건강 기록을 조회합니다.",
     response_model=list[HealthRecordResponse]
 )
 def get_child_health_records(
@@ -301,6 +354,9 @@ def get_child_health_records(
 # 건강 기록 수정 API
 @app.patch(
     "/records/{record_id}",
+    tags=["Health"],
+    summary="건강 기록 수정",
+    description="등록된 건강 기록을 수정합니다.",
     response_model=HealthRecordResponse
 )
 def update_health_record(
