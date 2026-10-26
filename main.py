@@ -1,8 +1,10 @@
-
+import json
+from datetime import datetime, time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, status
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 from database import Base, engine, get_db
 import models
@@ -13,7 +15,9 @@ from schemas import (
     ChildUpdate,
     HealthRecordCreate,
     HealthRecordResponse,
-    HealthRecordUpdate
+    HealthRecordUpdate,
+    HealthObservationCreate,
+    HealthObservationResponse,
 )
 
 # 서버 시작 시 데이터베이스 테이블 생성
@@ -397,3 +401,109 @@ def update_health_record(
     db.refresh(record)
 
     return record
+
+# 시간대별 건강 관찰 기록 등록
+@app.post(
+    "/observations",
+    tags=["Health"],
+    summary="시간대별 건강 관찰 기록 등록",
+    description="아동의 시간대별 체온, 증상, 관찰 내용을 저장합니다.",
+    response_model=HealthObservationResponse,
+    status_code=201,
+)
+def create_health_observation(
+    observation: HealthObservationCreate,
+    db: Session = Depends(get_db),
+):
+    # 1. 아동 존재 여부 확인
+    child = db.query(models.Child).filter(
+        models.Child.id == observation.child_id
+    ).first()
+
+    if child is None:
+        raise HTTPException(
+            status_code=404,
+            detail="해당 아동을 찾을 수 없습니다.",
+        )
+
+    # 2. 하루 건강 기록 조회
+    daily_record = db.query(models.HealthRecord).filter(
+        models.HealthRecord.child_id == observation.child_id,
+        models.HealthRecord.record_date == observation.record_date,
+    ).first()
+
+    # 3. 없다면 하루 건강 기록 생성
+    if daily_record is None:
+        daily_record = models.HealthRecord(
+            child_id=observation.child_id,
+            record_date=observation.record_date,
+            ai_status="pending",
+        )
+
+        db.add(daily_record)
+        db.flush()
+
+    # 4. 시간대별 체온 반영
+    temperature_fields = {
+        "morning": "temp_morning",
+        "noon": "temp_noon",
+        "afternoon": "temp_afternoon",
+    }
+
+    if observation.temperature is not None:
+        field_name = temperature_fields[observation.time_slot]
+
+        setattr(
+            daily_record,
+            field_name,
+            observation.temperature,
+        )
+
+    # 5. 개별 관찰 기록 생성
+    new_observation = models.HealthObservation(
+        health_record_id=daily_record.id,
+        time_slot=observation.time_slot,
+        observed_time=observation.observed_time,
+        temperature=observation.temperature,
+        selected_symptoms=json.dumps(
+            observation.selected_symptoms,
+            ensure_ascii=False,
+        ),
+        note=observation.note,
+    )
+
+    db.add(new_observation)
+
+    # 6. 기존 AI 분석 결과 무효화
+    daily_record.ai_status = "pending"
+    daily_record.ai_symptom_scores = None
+    daily_record.ai_categories = None
+    daily_record.ai_pattern_flags = None
+    daily_record.ai_care_priority = None
+    daily_record.ai_analyzed_at = None
+
+    # 7. DB 저장
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="건강 기록 저장 중 충돌이 발생했습니다.",
+        )
+
+    db.refresh(new_observation)
+
+    # 8. JSON 문자열을 배열로 변환하여 응답
+    return {
+        "id": new_observation.id,
+        "health_record_id": new_observation.health_record_id,
+        "time_slot": new_observation.time_slot,
+        "observed_time": new_observation.observed_time,
+        "temperature": new_observation.temperature,
+        "selected_symptoms": json.loads(
+            new_observation.selected_symptoms
+        ),
+        "note": new_observation.note,
+        "created_at": new_observation.created_at,
+    }
