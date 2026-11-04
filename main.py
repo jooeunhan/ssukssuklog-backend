@@ -18,7 +18,12 @@ from schemas import (
     HealthRecordUpdate,
     HealthObservationCreate,
     HealthObservationResponse,
+    AIAnalyzeRequest,
 )
+from ai_service import load_qlora_model, analyze_clinical_note
+from rf_service import load_rf_model, predict_care_priority
+from temperature_service import analyze_daily_temperature
+from personalization_service import analyze_allergy_context
 
 # 서버 시작 시 데이터베이스 테이블 생성
 @asynccontextmanager
@@ -506,4 +511,188 @@ def create_health_observation(
         ),
         "note": new_observation.note,
         "created_at": new_observation.created_at,
+    }
+
+@app.post(
+    "/ai/analyze",
+    tags=["AI"],
+    summary="아동 건강 기록 AI 분석",
+    description="QLoRA로 증상 정보를 추출하고 RF-D로 관찰 우선순위를 분류합니다.",
+)
+def analyze_health_record(
+    request: AIAnalyzeRequest,
+    db: Session = Depends(get_db),
+):
+    # 1. 아동 조회
+    child = db.query(models.Child).filter(
+        models.Child.id == request.child_id
+    ).first()
+
+    if child is None:
+        raise HTTPException(
+            status_code=404,
+            detail="해당 아동을 찾을 수 없습니다.",
+        )
+
+    # 2. 하루 건강 기록 조회
+    daily_record = db.query(models.HealthRecord).filter(
+        models.HealthRecord.child_id == request.child_id,
+        models.HealthRecord.record_date == request.record_date,
+    ).first()
+
+    if daily_record is None:
+        raise HTTPException(
+            status_code=404,
+            detail="해당 날짜의 건강 기록이 없습니다.",
+        )
+
+    # 3. 체온 3회 입력 확인
+    temperatures = [
+        daily_record.temp_morning,
+        daily_record.temp_noon,
+        daily_record.temp_afternoon,
+    ]
+
+    has_all_temperatures = all(
+        temp is not None for temp in temperatures
+    )
+
+    # 4. 시간대별 관찰 기록 조회
+    observations = db.query(
+        models.HealthObservation
+    ).filter(
+        models.HealthObservation.health_record_id == daily_record.id
+    ).order_by(
+        models.HealthObservation.observed_time.asc()
+    ).all()
+
+    # 5. 자연어 관찰 내용 취합
+    notes = [
+        obs.note.strip()
+        for obs in observations
+        if obs.note and obs.note.strip()
+    ]
+
+    if not notes:
+        raise HTTPException(
+            status_code=409,
+            detail="AI 분석에 사용할 관찰 내용이 없습니다.",
+        )
+
+    clinical_note = "\n".join(notes)
+
+    # 6. QLoRA
+    try:
+        load_qlora_model()
+
+        qlora_result = analyze_clinical_note(
+            clinical_note
+        )
+
+        # QLoRA 결과 저장
+        daily_record.ai_symptom_scores = json.dumps(
+            qlora_result["symptom_scores"],
+            ensure_ascii=False,
+        )
+
+        daily_record.ai_categories = json.dumps(
+            qlora_result["categories"],
+            ensure_ascii=False,
+        )
+
+        daily_record.ai_pattern_flags = json.dumps(
+            qlora_result["pattern_flags"],
+            ensure_ascii=False,
+        )
+
+        # RF-D 결과 기본값
+        rf_result = None
+
+        # 7. 체온 3회가 모두 있을 때만 RF-D 실행
+        if has_all_temperatures:
+            load_rf_model()
+
+            rf_result = predict_care_priority(
+                age_months=child.age_months,
+                morning_temp=daily_record.temp_morning,
+                lunch_temp=daily_record.temp_noon,
+                afternoon_temp=daily_record.temp_afternoon,
+                qlora_result=qlora_result,
+            )
+
+            daily_record.ai_care_priority = rf_result[
+                "care_priority"
+            ]
+
+            daily_record.ai_status = "completed"
+
+        else:
+            daily_record.ai_care_priority = None
+            daily_record.ai_status = "partial"
+
+        # 8. 개인별 체온 분석 (기존 AI 결과 저장 전에 실행)
+        temperature_analysis = analyze_daily_temperature(
+            db=db,
+            child_id=child.id,
+            record_date=daily_record.record_date,
+        )
+
+        # 9. 기존 알레르기 정보와 증상 분석
+        allergy_analysis = analyze_allergy_context(
+            allergies=child.allergies,
+            qlora_result=qlora_result,
+        )
+
+        # 10. AI 분석 결과 저장
+        daily_record.ai_analyzed_at = datetime.now()
+        db.commit()
+        db.refresh(daily_record)
+
+
+    except Exception as e:
+
+        import traceback
+
+        db.rollback()
+
+        print("AI 분석 오류:", repr(e))
+
+        traceback.print_exc()
+
+        daily_record.ai_status = "failed"
+
+        db.commit()
+
+        raise HTTPException(
+
+            status_code=500,
+
+            detail="AI 분석 중 오류가 발생했습니다.",
+
+        )
+
+    # 8. 결과 반환
+    return {
+        "child_id": child.id,
+        "record_date": str(daily_record.record_date),
+        "clinical_note": clinical_note,
+        "symptom_scores": qlora_result["symptom_scores"],
+        "categories": qlora_result["categories"],
+        "pattern_flags": qlora_result["pattern_flags"],
+        "care_priority": (
+            rf_result["care_priority"]
+            if rf_result is not None else None
+        ),
+        "care_priority_label": (
+            rf_result["label"]
+            if rf_result is not None else None
+        ),
+        "class_probabilities": (
+            rf_result["class_probabilities"]
+            if rf_result is not None else None
+        ),
+        "ai_status": daily_record.ai_status,
+        "ai_analyzed_at": daily_record.ai_analyzed_at,
+        "temperature_analysis": temperature_analysis,
+        "allergy_analysis": allergy_analysis,
     }
