@@ -23,3 +23,10 @@ __pycache__/
 
 # Local backups
 *.backup.db
+
+# Local test scripts
+/test_ai_inference.py
+/test_ai_loading.py
+/test_personalization.py
+/test_rf_inference.py
+/test_temperature.py
