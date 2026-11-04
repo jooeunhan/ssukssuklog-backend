@@ -167,3 +167,7 @@ class DailyHealthRecordResponse(BaseModel):
     model_config = ConfigDict(
         from_attributes=True
     )
+
+class AIAnalyzeRequest(BaseModel):
+    child_id: int
+    record_date: date
